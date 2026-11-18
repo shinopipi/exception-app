@@ -166,11 +166,45 @@
     }
   }
 
+  // 判定を変えるときは必ずここを通す（部署共有にした日を記録するため）
+  function setStatus(r, status, on = today()) {
+    if (status === '部署共有' && r.status !== '部署共有') r.sharedOn = on;
+    if (status !== '部署共有' && status !== '部署確認中') r.sharedOn = '';
+    r.status = status;
+  }
+
   function applyJudge(r) {
     const j = judge(r);
     r.autoStatus = j.status;
     r.autoReason = j.reason;
-    if (!r.manual && !r.done) r.status = j.status;
+    if (!r.manual && !r.done) setStatus(r, j.status);
+  }
+
+  // 部署共有した翌日以降も「部署共有」のまま（部署の対応待ち）→ 自動で「部署確認中」
+  function autoCarry() {
+    const t = today();
+    let n = 0;
+    for (const r of Object.values(db.records)) {
+      if (r.status !== '部署共有') continue;
+      if (!r.sharedOn) r.sharedOn = t; // 旧データ：今日共有した扱い
+      if (r.sharedOn < t) {
+        r.status = '部署確認中';
+        r.manual = true;
+        r.carriedOn = t;
+        r.updatedAt = Date.now();
+        n++;
+      }
+    }
+    return n;
+  }
+
+  function runAuto(silent) {
+    const n = autoCarry();
+    if (n) {
+      save();
+      if (!silent) toast(`部署共有のまま翌日以降になった ${n} 件を「部署確認中」に切り替えました`);
+    }
+    return n;
   }
 
   function rejudgeOpen() {
@@ -324,8 +358,16 @@
     }
     for (const k of Object.keys(REF_SOURCES)) db.refs[k] = Array.from(refSets[k]);
     const msg = importExceptions(rows);
+    // サンプル：例外の翌日に部署共有した想定にする（古い分は自動で部署確認中になる）
+    for (const r of Object.values(db.records)) {
+      if (r.login.startsWith('sample') && r.status === '部署共有') {
+        const d = addDays(r.date, 1);
+        r.sharedOn = d < t ? d : t;
+      }
+    }
+    const c = autoCarry();
     save();
-    return msg;
+    return msg + (c ? `\n部署共有のまま翌日以降の ${c} 件を部署確認中に切替` : '');
   }
 
   // ---------- フィルタ ----------
@@ -404,7 +446,10 @@
       r.diff != null ? `${r.diff}分` : '',
     ].filter(Boolean).join('　');
     const opts = STATUSES.map((s) => `<option${s === r.status ? ' selected' : ''}>${s}</option>`).join('');
-    const changed = r.manual && r.status !== r.autoStatus ? `<span class="auto">（自動：${esc(r.autoStatus)}）</span>` : '';
+    const md = (s) => s ? s.slice(5).replace('-', '/') : '';
+    const changed = r.status === '部署確認中' && r.carriedOn
+      ? `<span class="auto">（${md(r.sharedOn)}に部署共有 → ${md(r.carriedOn)}に自動で部署確認中）</span>`
+      : r.manual && r.status !== r.autoStatus ? `<span class="auto">（自動：${esc(r.autoStatus)}）</span>` : '';
     return `<div class="item s-${esc(r.status)}${r.done ? ' done' : ''}" data-id="${esc(r.id)}">
       <div class="item-head">
         <div><span class="badge">${esc(r.type)}</span><span class="who">${esc(r.name || r.login)}</span>
@@ -475,7 +520,7 @@
     const r = recOf(e.target);
     if (!r) return;
     if (e.target.classList.contains('status')) {
-      r.status = e.target.value;
+      setStatus(r, e.target.value);
       r.manual = r.status !== r.autoStatus;
     } else if (e.target.classList.contains('done')) {
       r.done = e.target.checked;
@@ -496,22 +541,6 @@
   });
   list.addEventListener('click', (e) => {
     if (e.target.id === 'btnMore') { shown += PAGE; renderList(); }
-  });
-
-  $('#btnRejudge').addEventListener('click', () => {
-    const n = rejudgeOpen();
-    save(); renderList();
-    toast(`再判定しました（判定が変わった行：${n} 件）`);
-  });
-
-  $('#btnCarry').addEventListener('click', () => {
-    const t = today();
-    const targets = filtered().filter((r) => r.status === '部署共有' && !r.done && r.date < t);
-    if (!targets.length) { toast('対象の行はありません'); return; }
-    if (!confirm(`表示中の「部署共有」で前日以前・未精査の ${targets.length} 件を「部署確認中」にします。よろしいですか？`)) return;
-    for (const r of targets) { r.status = '部署確認中'; r.manual = true; r.updatedAt = Date.now(); }
-    save(); renderList();
-    toast(`${targets.length} 件を部署確認中にしました`);
   });
 
   $('#btnDoneAll').addEventListener('click', () => {
@@ -541,7 +570,13 @@
     const label = src === 'exceptions' ? '例外リスト' : REF_SOURCES[src];
     try {
       const rows = await readSheet(file);
-      const msg = src === 'exceptions' ? importExceptions(rows) : importRefs(src, rows);
+      let msg = src === 'exceptions' ? importExceptions(rows) : importRefs(src, rows);
+      if (src !== 'exceptions') {
+        const n = rejudgeOpen();
+        msg += `\n未精査の例外を自動で再判定（判定が変わった行：${n} 件）`;
+      }
+      const c = autoCarry();
+      if (c) msg += `\n部署共有のまま翌日以降の ${c} 件を部署確認中に切替`;
       save();
       log(`【${label}】${file.name}\n${msg}`);
       renderAll();
@@ -610,5 +645,11 @@
     $('#fFrom').value = addDays(today(), -6);
     $('#fTo').value = today();
   }
+  runAuto(false);
   renderAll();
+
+  // 開いたまま日付が変わったときも自動で切り替える
+  const tick = () => { if (runAuto(false)) renderAll(); };
+  setInterval(tick, 5 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
 })();
