@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>例外対応アプリ</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>例外対応</h1>
+  <nav>
+    <button class="tab active" data-tab="review">精査</button>
+    <button class="tab" data-tab="import">取込</button>
+    <button class="tab" data-tab="settings">設定</button>
+  </nav>
+</header>
+
+<main>
+  <!-- 精査 -->
+  <section id="tab-review" class="panel active">
+    <div class="filters">
+      <div class="range">
+        <label>期間 <input type="date" id="fFrom"></label>
+        <span>〜</span>
+        <label><input type="date" id="fTo"></label>
+      </div>
+      <div class="quick">
+        <button data-range="today">今日</button>
+        <button data-range="yesterday">昨日</button>
+        <button data-range="week">直近7日</button>
+        <button data-range="month">今月</button>
+        <button data-range="all">全期間</button>
+      </div>
+      <div class="row">
+        <select id="fType"><option value="">種別：すべて</option></select>
+        <select id="fStatus"><option value="">判定：すべて</option></select>
+        <select id="fDept"><option value="">部署：すべて</option></select>
+        <select id="fDone">
+          <option value="">精査：すべて</option>
+          <option value="todo">未精査のみ</option>
+          <option value="done">精査済のみ</option>
+        </select>
+      </div>
+      <input type="search" id="fText" placeholder="ログインID・氏名・メモで検索">
+    </div>
+
+    <div id="summary" class="summary"></div>
+
+    <div class="bulk">
+      <button id="btnRejudge" title="未精査の行だけルールで判定し直します">未精査を再判定</button>
+      <button id="btnCarry" title="表示中で、前日以前に部署共有のまま未精査の行を部署確認中にします">部署共有→部署確認中</button>
+      <button id="btnDoneAll" title="表示中の行をすべて精査済にします">表示中を精査済に</button>
+    </div>
+
+    <div id="list" class="list"></div>
+  </section>
+
+  <!-- 取込 -->
+  <section id="tab-import" class="panel">
+    <div class="card">
+      <h2>サンプルデータ</h2>
+      <p class="muted">動作確認用の架空データを入れます（直近14日分）。</p>
+      <button id="btnSample" class="primary">サンプルを読み込む</button>
+    </div>
+
+    <div class="card">
+      <h2>ファイル取込（xlsx / csv）</h2>
+      <p class="muted">ファイルはブラウザの中だけで読み込み、外部には送信しません。</p>
+      <div class="file-row"><label>例外リスト</label><input type="file" data-src="exceptions" accept=".xlsx,.xls,.xlsm,.csv"></div>
+      <div class="file-row"><label>勤怠入力</label><input type="file" data-src="kintai" accept=".xlsx,.xls,.xlsm,.csv"></div>
+      <div class="file-row"><label>CTK</label><input type="file" data-src="ctk" accept=".xlsx,.xls,.xlsm,.csv"></div>
+      <div class="file-row"><label>早退履歴</label><input type="file" data-src="soutai" accept=".xlsx,.xls,.xlsm,.csv"></div>
+      <div class="file-row"><label>VTO</label><input type="file" data-src="vto" accept=".xlsx,.xls,.xlsm,.csv"></div>
+      <p class="muted">照合データ（勤怠入力・CTK・早退履歴・VTO）を先に入れてから例外リストを入れると、取込時にそのまま判定されます。後から入れた場合は「未精査を再判定」を押してください。</p>
+      <div id="importLog" class="log"></div>
+    </div>
+
+    <div class="card">
+      <h2>取込済みデータ</h2>
+      <div id="dataStats"></div>
+    </div>
+  </section>
+
+  <!-- 設定 -->
+  <section id="tab-settings" class="panel">
+    <div class="card">
+      <h2>判定ルール</h2>
+      <ul class="rules">
+        <li><b>早退</b>：勤怠入力・CTK・早退履歴・VTOのどれかに記録あり → 対応不要／どれにもない → 部署共有</li>
+        <li><b>遅刻</b>：勤怠入力・CTKのどれかに記録あり → 対応不要／ない → 部署共有</li>
+        <li><b>早出・残業</b>：しきい値以上 → 部署共有（現場確認）／未満 → 対応不要</li>
+        <li><b>打刻漏れ・その他</b> → 部署共有</li>
+        <li><b>部署確認中</b>：部署共有した行が、翌日も部署の対応待ちのときに手動または一括で設定</li>
+      </ul>
+      <label class="inline">早出のしきい値（分） <input type="number" id="thEarly" min="0" step="5"></label>
+      <label class="inline">残業のしきい値（分） <input type="number" id="thOver" min="0" step="5"></label>
+    </div>
+
+    <div class="card">
+      <h2>保存データ</h2>
+      <p class="muted">データはこの端末のこのブラウザに保存されます。別の端末に移すときや念のための控えは、バックアップを使ってください。</p>
+      <div class="btns">
+        <button id="btnBackup">バックアップを書き出す</button>
+        <label class="btn-like">バックアップから戻す<input type="file" id="restoreFile" accept=".json" hidden></label>
+        <button id="btnClear" class="danger">全データを削除</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
